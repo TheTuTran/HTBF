@@ -1,7 +1,7 @@
 """
 Install the Google AI Python SDK
 
-pip install google-generativeai python-dotenv tweepy
+pip install google-generativeai python-dotenv tweepy googlesearch-python bs4 requests
 
 See the getting started guide for more information:
 https://ai.google.dev/gemini-api/docs/get-started/python
@@ -9,9 +9,12 @@ https://ai.google.dev/gemini-api/docs/get-started/python
 
 import os
 from dotenv import load_dotenv
+from googlesearch import search
 import google.generativeai as genai
 import pandas as pd
 import tweepy
+import requests
+from bs4 import BeautifulSoup
 
 load_dotenv()
 
@@ -110,25 +113,56 @@ def log_tweeted_celebrity(celebrity):
     with open(tweet_log_path, 'a') as file:
         file.write(f"{celebrity}\n")
 
+def get_plain_text(url):
+    "Get all the text from a URL."
+    try:
+        response = requests.get(url)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        for script in soup(["script", "style"]):
+            script.decompose()
+        text = soup.get_text()
+        lines = (line.strip() for line in text.splitlines())
+        text = '\n'.join(line for line in lines if line)
+        return text
+    except Exception as e:
+        return f"Failed to retrieve {url}: {str(e)}"
 
 def generate_response(celebrity):
     """Generate a response using the generative AI model."""
+    query = f"How {celebrity} became famous"
+    results = list(search(query, num_results=5))
+    
+    texts = []
+    for url in results:
+        text = get_plain_text(url)
+        texts.append(text)
+    
+    combined_text = "\n\n".join(texts[:3])
+    
     chat_session = model.start_chat(
         history=[{"role": "user", "parts": [f"How did {celebrity} become famous?"]}]
     )
-    response = chat_session.send_message(f"How did {celebrity} become famous?")
-    return response.text
+    response = chat_session.send_message(f"Here is some information I found:\n{combined_text}")
+    summary = response.text
+    
+    # Separate summary and links for posting
+    links = "\n".join(results[:3])
+    return summary, links
 
-def post_to_twitter_thread(text):
-    """Post the given text to Twitter as a thread."""
+def post_to_twitter_thread(text, links):
+    """Post the given text and links to Twitter as a thread."""
     try:
         chunks = text.split('#')
         last_tweet_id = None
 
         for chunk in chunks:
-            tweet = client.create_tweet(text=chunk, in_reply_to_tweet_id=last_tweet_id)
+            tweet = client.create_tweet(text=chunk.strip(), in_reply_to_tweet_id=last_tweet_id)
             last_tweet_id = tweet.data["id"]
             print("Successfully posted tweet part")
+        
+        # Post the links as a reply to the last tweet
+        client.create_tweet(text=links, in_reply_to_tweet_id=last_tweet_id)
+        print("Successfully posted links")
 
     except tweepy.errors.TweepyException as e:
         print(f"Error posting tweet: {e}")
@@ -140,8 +174,8 @@ def generate_and_post_tweet():
         if not celebrity:
             return
         
-        response_text = generate_response(celebrity)
-        post_to_twitter_thread(response_text)
+        response_text, links = generate_response(celebrity)
+        post_to_twitter_thread(response_text, links)
         log_tweeted_celebrity(celebrity)
     except Exception as e:
         print(f"Error processing {celebrity}: {e}")
